@@ -1,3 +1,7 @@
-python-telegram-bot
-python-dotenv
-pymongo[srv]
+python-telegram-bot==20.7
+python-dotenv==1.0.1
+pydantic==1.10.14
+pymongo[srv]==4.7.2
+apscheduler==3.10.4
+rich==13.7.1
+pytest==8.2.2

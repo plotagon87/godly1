@@ -1,5 +1,4 @@
 import logging
-import os
 from datetime import datetime, date
 from dateutil.relativedelta import relativedelta
 from telegram import Update, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
@@ -12,24 +11,41 @@ from telegram.ext import (
     CallbackQueryHandler,
     ConversationHandler,
 )
-from dotenv import load_dotenv
-from pymongo import MongoClient
-from pymongo.errors import ConnectionFailure
+from pymongo import MongoClient, ASCENDING
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from bson.objectid import ObjectId
+from rich.logging import RichHandler
+from config import settings
 
-# --- Configuration & Setup ---
-
-# Load environment variables from .env file
-load_dotenv()
-
-# Configure logging for debugging
+# --- Logging ---
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
+    level=logging.INFO,
+    format="%(message)s",
+    datefmt="[%X]",
+    handlers=[RichHandler()]
 )
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("godly_bot")
 
-# Conversation states for the finite state machine
+# --- MongoDB Integration ---
+def init_mongodb():
+    try:
+        client = MongoClient(settings.MONGO_URI)
+        db = client[settings.MONGO_DB_NAME]
+        users = db.users
+        # Indexes for performance
+        users.create_index([("user_id", ASCENDING)], unique=True)
+        users.create_index([("telegram_username", ASCENDING)])
+        users.create_index([("godfather", ASCENDING)])
+        users.create_index([("status", ASCENDING)])
+        logger.info("Connected to MongoDB and ensured indexes.")
+        return users
+    except Exception as e:
+        logger.critical(f"MongoDB connection/indexing failed: {e}")
+        exit(1)
+
+users_collection = init_mongodb()
+
+# --- Conversation States ---
 (
     LANGUAGE_SELECTION,
     NAME_INPUT,
@@ -40,86 +56,8 @@ logger = logging.getLogger(__name__)
     TRANSACTION_ID,
 ) = range(7)
 
-# --- Environment Variables & Constants ---
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
-MONGO_URI = os.getenv("MONGO_URI")
-MONGO_DB_NAME = os.getenv("MONGO_DB_NAME")
-
-SUBSCRIPTION_FEE = 5000
-RENEWAL_DAY = 25  # All subscriptions renew on the 25th of the month
-REFERRAL_REWARD = 2000  # Reward for each referral
-
-# Check for missing essential variables
-if not all([BOT_TOKEN, ADMIN_CHAT_ID, MONGO_URI, MONGO_DB_NAME]):
-    logger.critical("CRITICAL: One or more environment variables are missing. Check your .env file.")
-    exit()
-
-# --- MongoDB Integration ---
-
-def init_mongodb():
-    """Initializes and returns the MongoDB users collection."""
-    try:
-        client = MongoClient(MONGO_URI)
-        # The ismaster command is cheap and does not require auth.
-        client.admin.command('ismaster')
-        db = client[MONGO_DB_NAME]
-        logger.info("Successfully connected to MongoDB.")
-        return db.users
-    except ConnectionFailure as e:
-        logger.error(f"MongoDB Connection Failure: {e}")
-        return None
-    except Exception as e:
-        logger.error(f"Failed to connect to MongoDB: {e}")
-        return None
-
-# Initialize the collection globally
-users_collection = init_mongodb()
-if users_collection is None:
-    logger.critical("Could not establish a connection to the database. The bot will exit.")
-    exit()
-
-def calculate_renewal_date() -> date:
-    """Calculates the next renewal date, which is always the 25th of the next month."""
-    today = date.today()
-    # Move to the first day of the next month
-    next_month = (today.replace(day=1) + relativedelta(months=1))
-    # Set the day to the RENEWAL_DAY
-    renewal_date = next_month.replace(day=RENEWAL_DAY)
-    return renewal_date
-
 # --- Bot Text & Messages ---
-
-PAYMENT_DETAILS = {
-    'mtn': {
-        'fr': f"📱 **Paiement par MTN Mobile Money**\n\n" \
-              f"Veuillez transférer **{SUBSCRIPTION_FEE} FCFA** au numéro suivant:\n" \
-              f"Numéro: `+237 6XXXXXXXX`\n" \
-              f"Nom: `NOM DU BÉNÉFICIAIRE`\n\n" \
-              f"Après le paiement, revenez ici et envoyez l'ID de la transaction pour vérification.",
-        'en': f"📱 **MTN Mobile Money Payment**\n\n" \
-              f"Please transfer **{SUBSCRIPTION_FEE} FCFA** to the following number:\n" \
-              f"Number: `+237 6XXXXXXXX`\n" \
-              f"Name: `RECIPIENT NAME`\n\n" \
-              f"After payment, come back here and send the Transaction ID for verification."
-    },
-    'orange': {
-        'fr': f"🍊 **Paiement par Orange Money**\n\n" \
-              f"Veuillez transférer **{SUBSCRIPTION_FEE} FCFA** au numéro suivant:\n" \
-              f"Numéro: `+237 6XXXXXXXX`\n" \
-              f"Nom: `NOM DU BÉNÉFICIAIRE`\n\n" \
-              f"Après le paiement, revenez ici et envoyez l'ID de la transaction pour vérification.",
-        'en': f"🍊 **Orange Money Payment**\n\n" \
-              f"Please transfer **{SUBSCRIPTION_FEE} FCFA** to the following number:\n" \
-              f"Number: `+237 6XXXXXXXX`\n" \
-              f"Name: `RECIPIENT NAME`\n\n" \
-              f"After payment, come back here and send the Transaction ID for verification."
-    }
-}
-
 def get_messages(lang, renewal_date_str=""):
-    """Returns a dictionary of all messages in the specified language."""
-    # The user-provided text for after approval
     post_approval_fr = (
         "Vous recevrez une somme de 2000 FCFA chaque fois qu’un nouveau compte est créé et une somme globale lorsque les différents "
         "individus parrainés par vous paient leurs abonnements de 5000 FCFA à la fin du mois (25 de chaque mois).\n\n"
@@ -132,15 +70,14 @@ def get_messages(lang, renewal_date_str=""):
         "All payments are made on the 25th of each month and accounts that fail to pay will be automatically deleted.\n\n"
         "Make the most of our referral service and earn more by buying and reselling crypto."
     )
-    
     return {
-        'welcome': "🎉 Welcome to our referral system! / Bienvenue dans notre système de parrainage!\n\n" \
+        'welcome': "🎉 Welcome to our referral system! / Bienvenue dans notre système de parrainage!\n\n"
                    "Please choose your language / Choisissez votre langue:",
         'ask_name': {'fr': "📝 Entrez votre nom complet:", 'en': "📝 Please enter your full name:"}[lang],
         'ask_number': {'fr': "📞 Entrez votre numéro de téléphone (Ex: 67...):", 'en': "📞 Please enter your phone number (e.g., 67...):"}[lang],
         'ask_email': {'fr': "📧 Entrez votre adresse e-mail:", 'en': "📧 Please enter your email address:"}[lang],
-        'ask_godfather': {'fr': "👨‍👦 Entrez le nom d'utilisateur Telegram de votre parrain (ou envoyez 'skip' si vous n'en avez pas):", 'en': "👨‍👦 Please enter your godfather's Telegram username (or send 'skip' if you don't have one):"}[lang],
-        'choose_payment': {'fr': f"✅ Informations enregistrées ! Pour activer votre compte, veuillez payer les frais d'abonnement de **{SUBSCRIPTION_FEE} FCFA**. Choisissez votre mode de paiement :", 'en': f"✅ Information saved! To activate your account, please pay the **{SUBSCRIPTION_FEE} FCFA** subscription fee. Choose your payment method:"}[lang],
+        'ask_godfather': {'fr': "👨‍👦 Entrez le numéro d'utilisateur Telegram de votre parrain (ou envoyez 'skip' si vous n'en avez pas):", 'en': "👨‍👦 Please enter your godfather's Telegram user ID (or send 'skip' if you don't have one):"}[lang],
+        'choose_payment': {'fr': f"✅ Informations enregistrées ! Pour activer votre compte, veuillez payer les frais d'abonnement de **{settings.SUBSCRIPTION_FEE} FCFA**. Choisissez votre mode de paiement :", 'en': f"✅ Information saved! To activate your account, please pay the **{settings.SUBSCRIPTION_FEE} FCFA** subscription fee. Choose your payment method:"}[lang],
         'pending_approval': {'fr': "⏳ Votre paiement est en cours de vérification. Vous recevrez une notification de l'administrateur très bientôt.", 'en': "⏳ Your payment is being verified. You will receive a notification from the admin very soon."}[lang],
         'approved_message': {
             'fr': f"✅ **Félicitations ! Votre compte est approuvé.**\n\n"
@@ -155,22 +92,45 @@ def get_messages(lang, renewal_date_str=""):
         'error': {'fr': "❌ Une erreur de base de données s'est produite. Veuillez réessayer ou contacter un administrateur.", 'en': "❌ A database error occurred. Please try again or contact an admin."}[lang]
     }
 
+PAYMENT_DETAILS = {
+    'mtn': {
+        'fr': f"📱 **Paiement par MTN Mobile Money**\n\nVeuillez transférer **{settings.SUBSCRIPTION_FEE} FCFA** au numéro suivant:\nNuméro: `+237 6XXXXXXXX`\nNom: `NOM DU BÉNÉFICIAIRE`\n\nAprès le paiement, revenez ici et envoyez l'ID de la transaction pour vérification.",
+        'en': f"📱 **MTN Mobile Money Payment**\n\nPlease transfer **{settings.SUBSCRIPTION_FEE} FCFA** to the following number:\nNumber: `+237 6XXXXXXXX`\nName: `RECIPIENT NAME`\n\nAfter payment, come back here and send the Transaction ID for verification."
+    },
+    'orange': {
+        'fr': f"🍊 **Paiement par Orange Money**\n\nVeuillez transférer **{settings.SUBSCRIPTION_FEE} FCFA** au numéro suivant:\nNuméro: `+237 6XXXXXXXX`\nNom: `NOM DU BÉNÉFICIAIRE`\n\nAprès le paiement, revenez ici et envoyez l'ID de la transaction pour vérification.",
+        'en': f"🍊 **Orange Money Payment**\n\nPlease transfer **{settings.SUBSCRIPTION_FEE} FCFA** to the following number:\nNumber: `+237 6XXXXXXXX`\nName: `RECIPIENT NAME`\n\nAfter payment, come back here and send the Transaction ID for verification."
+    }
+}
+
 MAIN_MENU_KEYBOARD = ReplyKeyboardMarkup(
     [
-        ["My Info", "Referral Stats"],
-        ["About Us", "Contact Us"]
+        ["/myinfo", "/referralstats"],
+        ["/aboutus", "/contactus"]
     ],
     resize_keyboard=True
 )
 
-# --- Conversation Handlers ---
+# --- Utility Functions ---
+def calculate_renewal_date() -> date:
+    today = date.today()
+    next_month = today + relativedelta(months=1)
+    renewal_date = next_month.replace(day=settings.RENEWAL_DAY)
+    return renewal_date
 
+def normalize_godfather(godfather_input):
+    """Always store godfather as user_id (int) if possible, else None."""
+    try:
+        return int(godfather_input)
+    except (ValueError, TypeError):
+        # Try to resolve username to user_id
+        user = users_collection.find_one({"telegram_username": godfather_input})
+        return user["user_id"] if user else None
+
+# --- Conversation Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Starts the conversation and asks for language selection."""
     user = update.effective_user
     logger.info(f"User {user.id} ({user.username}) started the bot.")
-    
-    # Check if user is already in the database
     existing_user = users_collection.find_one({"user_id": user.id})
     if existing_user and existing_user.get('status') == 'Approved':
         lang = existing_user.get('language', 'en')
@@ -178,7 +138,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         await update.message.reply_text({
             'fr': f"👋 Re-bonjour! Votre compte est déjà actif. Votre prochain renouvellement est le {renewal_date}.",
             'en': f"👋 Welcome back! Your account is already active. Your next renewal date is {renewal_date}."
-        }[lang])
+        }[lang], reply_markup=MAIN_MENU_KEYBOARD)
         return ConversationHandler.END
 
     keyboard = [
@@ -190,7 +150,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return LANGUAGE_SELECTION
 
 async def language_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Stores the selected language and asks for the user's name."""
     query = update.callback_query
     await query.answer()
     lang = query.data.split('_')[1]
@@ -200,32 +159,28 @@ async def language_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     return NAME_INPUT
 
 async def handle_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Stores the name and asks for the phone number."""
     context.user_data['name'] = update.message.text.strip()
     lang = context.user_data['language']
     await update.message.reply_text(get_messages(lang)['ask_number'])
     return NUMBER_INPUT
 
 async def handle_number(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Stores the phone number and asks for the email."""
     context.user_data['phone'] = update.message.text.strip()
     lang = context.user_data['language']
     await update.message.reply_text(get_messages(lang)['ask_email'])
     return EMAIL_INPUT
 
 async def handle_email(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Stores the email and asks for the godfather."""
     context.user_data['email'] = update.message.text.strip().lower()
     lang = context.user_data['language']
     await update.message.reply_text(get_messages(lang)['ask_godfather'])
     return GODFATHER_INPUT
 
 async def handle_godfather(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Stores the godfather and asks for payment method."""
     godfather_input = update.message.text.strip()
-    context.user_data['godfather'] = 'None' if godfather_input.lower() == 'skip' else godfather_input
+    godfather_id = None if godfather_input.lower() == 'skip' else normalize_godfather(godfather_input)
+    context.user_data['godfather'] = godfather_id
     lang = context.user_data['language']
-    
     keyboard = [
         [InlineKeyboardButton("📱 MTN Mobile Money", callback_data='payment_mtn')],
         [InlineKeyboardButton("🍊 Orange Money", callback_data='payment_orange')]
@@ -235,27 +190,22 @@ async def handle_godfather(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     return PAYMENT_METHOD
 
 async def payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Shows payment instructions based on selection."""
     query = update.callback_query
     await query.answer()
     payment_method = query.data.split('_')[1]
     context.user_data['payment_method'] = payment_method
     lang = context.user_data['language']
-    
     instructions = PAYMENT_DETAILS[payment_method][lang]
     await query.edit_message_text(text=instructions, parse_mode='Markdown')
     return TRANSACTION_ID
 
 async def handle_transaction_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Saves all user data to DB and forwards to admin."""
     user = update.effective_user
     context.user_data['transaction_id'] = update.message.text.strip()
     lang = context.user_data['language']
-
-    # Prepare data for MongoDB
     user_data = {
         "user_id": user.id,
-        "telegram_id": user.id,  # <-- Add this line
+        "telegram_id": user.id,
         "telegram_username": user.username,
         "name": context.user_data['name'],
         "phone": context.user_data['phone'],
@@ -267,63 +217,52 @@ async def handle_transaction_id(update: Update, context: ContextTypes.DEFAULT_TY
         "status": "Pending",
         "registration_date": datetime.utcnow()
     }
-
     try:
-        # Use update_one with upsert=True to create or update the record
         users_collection.update_one(
             {"user_id": user.id},
             {"$set": user_data},
             upsert=True
         )
         logger.info(f"User data for {user.id} saved/updated in MongoDB.")
-
-        # Notify user
         await update.message.reply_text(
             get_messages(lang)['pending_approval'],
             reply_markup=MAIN_MENU_KEYBOARD
         )
-
         # Forward details to admin
+        godfather_display = user_data['godfather'] if user_data['godfather'] else "None"
         admin_message = (
-            f"🔔 **NOUVELLE SOUMISSION DE PAIEMENT** 🔔\n\n"
-            f"👤 **Utilisateur:** {user_data['name']} (@{user_data['telegram_username']})\n"
-            f"🆔 **ID Utilisateur:** `{user_data['user_id']}`\n"
-            f"📞 **Téléphone:** {user_data['phone']}\n"
+            f"🔔 **NEW PAYMENT SUBMISSION** 🔔\n\n"
+            f"👤 **User:** {user_data['name']} ({'@'+user_data['telegram_username'] if user_data['telegram_username'] else 'No username'})\n"
+            f"🆔 **User ID:** `{user_data['user_id']}`\n"
+            f"📞 **Phone:** {user_data['phone']}\n"
             f"📧 **Email:** {user_data['email']}\n"
-            f"👨‍👦 **Parrain:** {user_data['godfather']}\n"
-            f"💳 **Méthode:** {user_data['payment_method'].upper()}\n"
-            f"🧾 **ID Transaction:** `{user_data['transaction_id']}`\n"
+            f"👨‍👦 **Godfather ID:** {godfather_display}\n"
+            f"💳 **Method:** {user_data['payment_method'].upper()}\n"
+            f"🧾 **Transaction ID:** `{user_data['transaction_id']}`\n"
         )
         keyboard = [
-            [InlineKeyboardButton("✅ Approuver", callback_data=f'approve_{user.id}')],
-            [InlineKeyboardButton("❌ Rejeter", callback_data=f'reject_{user.id}')]
+            [InlineKeyboardButton("✅ Approve", callback_data=f'approve_{user.id}')],
+            [InlineKeyboardButton("❌ Reject", callback_data=f'reject_{user.id}')]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=admin_message, reply_markup=reply_markup, parse_mode='Markdown')
-
+        await context.bot.send_message(chat_id=settings.ADMIN_CHAT_ID, text=admin_message, reply_markup=reply_markup, parse_mode='Markdown')
     except Exception as e:
         logger.error(f"Failed to save user data for {user.id} to MongoDB: {e}")
         await update.message.reply_text(get_messages(lang)['error'])
         return ConversationHandler.END
-
     return ConversationHandler.END
 
 async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles admin approval/rejection from inline buttons."""
     query = update.callback_query
     await query.answer()
-    
     action, user_id_str = query.data.split('_', 1)
     user_id = int(user_id_str)
-    
     user_record = users_collection.find_one({"user_id": user_id})
     if not user_record:
-        await query.edit_message_text(text=f"⚠️ Erreur: Utilisateur avec ID {user_id} non trouvé dans la base de données.")
+        await query.edit_message_text(text=f"⚠️ Error: User with ID {user_id} not found in the database.")
         return
-
     lang = user_record.get('language', 'en')
     original_message = query.message.text
-    
     if action == 'approve':
         renewal_date = calculate_renewal_date()
         update_data = {
@@ -332,32 +271,30 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "subscription_renewal_date": datetime.combine(renewal_date, datetime.min.time())
         }
         users_collection.update_one({"user_id": user_id}, {"$set": update_data})
-        
         renewal_date_str = renewal_date.strftime('%d %B %Y')
         messages = get_messages(lang, renewal_date_str)
         try:
             await context.bot.send_message(chat_id=user_id, text=messages['approved_message'], parse_mode='Markdown')
-            await query.edit_message_text(text=f"{original_message}\n\n--- [ ✅ APPROUVÉ par {query.from_user.first_name} ] ---")
+            await query.edit_message_text(text=f"{original_message}\n\n--- [ ✅ APPROVED by {query.from_user.first_name} ] ---")
         except Exception as e:
             logger.error(f"Failed to send approval message to {user_id}: {e}")
-            await query.edit_message_text(text=f"{original_message}\n\n--- [ ✅ APPROUVÉ mais l'utilisateur n'a pas pu être notifié. ] ---")
-
+            await query.edit_message_text(text=f"{original_message}\n\n--- [ ✅ APPROVED but user could not be notified. ] ---")
     elif action == 'reject':
         users_collection.update_one({"user_id": user_id}, {"$set": {"status": "Rejected"}})
         messages = get_messages(lang)
         try:
             await context.bot.send_message(chat_id=user_id, text=messages['rejected_message'], parse_mode='Markdown')
-            await query.edit_message_text(text=f"{original_message}\n\n--- [ ❌ REJETÉ par {query.from_user.first_name} ] ---")
+            await query.edit_message_text(text=f"{original_message}\n\n--- [ ❌ REJECTED by {query.from_user.first_name} ] ---")
         except Exception as e:
             logger.error(f"Failed to send rejection message to {user_id}: {e}")
-            await query.edit_message_text(text=f"{original_message}\n\n--- [ ❌ REJETÉ mais l'utilisateur n'a pas pu être notifié. ] ---")
+            await query.edit_message_text(text=f"{original_message}\n\n--- [ ❌ REJECTED but user could not be notified. ] ---")
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Cancels and ends the conversation."""
     lang = context.user_data.get('language', 'en')
     await update.message.reply_text(get_messages(lang)['cancel'], reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
+# --- Command Handlers ---
 async def renewal_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user = users_collection.find_one({"user_id": user_id})
@@ -374,7 +311,7 @@ async def referral_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def stats_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    count = users_collection.count_documents({"godfather": str(user_id)})
+    count = users_collection.count_documents({"godfather": user_id})
     await update.message.reply_text(f"You have referred {count} people.")
 
 async def my_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -385,7 +322,7 @@ async def my_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"👤 Name: {user.get('name')}\n"
             f"📞 Phone: {user.get('phone')}\n"
             f"📧 Email: {user.get('email')}\n"
-            f"👨‍👦 Godfather: {user.get('godfather')}\n"
+            f"👨‍👦 Godfather ID: {user.get('godfather')}\n"
             f"💳 Payment: {user.get('payment_method')}\n"
             f"🧾 Transaction ID: {user.get('transaction_id')}\n"
             f"Status: {user.get('status')}"
@@ -396,7 +333,7 @@ async def my_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def referral_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    count = users_collection.count_documents({"godfather": str(user_id)})
+    count = users_collection.count_documents({"godfather": user_id})
     await update.message.reply_text(f"You have referred {count} people.", reply_markup=MAIN_MENU_KEYBOARD)
 
 async def about_us(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -414,32 +351,24 @@ async def contact_us(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def referral_earnings(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show the user their referral earnings (all-time and this month)."""
     user_id = update.effective_user.id
     now = datetime.now()
-    last_25th = now.replace(day=RENEWAL_DAY)
-    if now.day < RENEWAL_DAY:
-        if last_25th.month == 1:
-            last_25th = last_25th.replace(year=last_25th.year - 1, month=12)
-        else:
-            last_25th = last_25th.replace(month=last_25th.month - 1)
+    last_25th = now.replace(day=settings.RENEWAL_DAY)
+    if now.day < settings.RENEWAL_DAY:
+        last_25th = last_25th - relativedelta(months=1)
     period_start = last_25th.replace(hour=0, minute=0, second=0, microsecond=0)
     period_end = now.replace(hour=23, minute=59, second=59, microsecond=999999)
-
-    # All-time
     all_time_count = users_collection.count_documents({
-        "godfather": {"$in": [str(user_id), update.effective_user.username]},
+        "godfather": user_id,
         "status": "Approved"
     })
-    # This month
     this_month_count = users_collection.count_documents({
-        "godfather": {"$in": [str(user_id), update.effective_user.username]},
+        "godfather": user_id,
         "status": "Approved",
         "registration_date": {"$gte": period_start, "$lte": period_end}
     })
-    all_time_earnings = all_time_count * REFERRAL_REWARD
-    this_month_earnings = this_month_count * REFERRAL_REWARD
-
+    all_time_earnings = all_time_count * settings.REFERRAL_REWARD
+    this_month_earnings = this_month_count * settings.REFERRAL_REWARD
     await update.message.reply_text(
         f"💸 *Referral Earnings*\n\n"
         f"All-time: {all_time_count} referrals = {all_time_earnings} FCFA\n"
@@ -447,72 +376,54 @@ async def referral_earnings(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
+# --- Monthly Admin Report ---
 async def send_monthly_referral_report(application):
     now = datetime.now()
-    last_25th = now.replace(day=RENEWAL_DAY)
-    if now.day < RENEWAL_DAY:
-        if last_25th.month == 1:
-            last_25th = last_25th.replace(year=last_25th.year - 1, month=12)
-        else:
-            last_25th = last_25th.replace(month=last_25th.month - 1)
+    last_25th = now.replace(day=settings.RENEWAL_DAY)
+    if now.day < settings.RENEWAL_DAY:
+        last_25th = last_25th - relativedelta(months=1)
     period_start = last_25th.replace(hour=0, minute=0, second=0, microsecond=0)
     period_end = now.replace(hour=23, minute=59, second=59, microsecond=999999)
-
     users = list(users_collection.find({}))
     godfather_map = {}
     for user in users:
         godfather = user.get("godfather")
-        if godfather and godfather != "None":
-            godfather_user = users_collection.find_one({
-                "$or": [
-                    {"telegram_username": godfather},
-                    {"user_id": godfather},
-                    {"telegram_id": godfather}
-                ]
-            })
-            if godfather_user:
-                reg_date = user.get("registration_date")
-                status = user.get("status")
-                if reg_date and status == "Approved" and period_start <= reg_date <= period_end:
-                    godfather_id = godfather_user["user_id"]
-                    if godfather_id not in godfather_map:
-                        godfather_map[godfather_id] = {
-                            "username": godfather_user.get("telegram_username", ""),
-                            "name": godfather_user.get("name", ""),
-                            "count": 0
-                        }
-                    godfather_map[godfather_id]["count"] += 1
-
+        if godfather:
+            reg_date = user.get("registration_date")
+            status = user.get("status")
+            if reg_date and status == "Approved" and period_start <= reg_date <= period_end:
+                godfather_map.setdefault(godfather, {"count": 0, "user": None})
+                godfather_map[godfather]["count"] += 1
+    # Attach user info for reporting
+    for godfather_id in godfather_map:
+        godfather_map[godfather_id]["user"] = users_collection.find_one({"user_id": godfather_id})
     total_payout = 0
     report_lines = ["Referral Earnings Report ({} - {})".format(
         period_start.strftime("%d %b %Y"), period_end.strftime("%d %b %Y"))]
     report_lines.append("User | Referrals | Amount (FCFA)")
     report_lines.append("-" * 35)
-    for user in users:
-        uid = user["user_id"]
-        username = user.get("telegram_username", "")
-        name = user.get("name", "")
-        count = godfather_map.get(uid, {}).get("count", 0)
-        amount = count * REFERRAL_REWARD
+    for godfather_id, data in godfather_map.items():
+        user = data["user"]
+        count = data["count"]
+        amount = count * settings.REFERRAL_REWARD
         total_payout += amount
+        username = user.get("telegram_username", "") if user else ""
+        name = user.get("name", "") if user else str(godfather_id)
         report_lines.append(f"{name} (@{username}) | {count} | {amount}")
-
         # Notify user if they have earnings
-        if amount > 0:
+        if user and amount > 0:
             try:
                 await application.bot.send_message(
-                    chat_id=uid,
+                    chat_id=godfather_id,
                     text=f"🎉 You earned {amount} FCFA from {count} referral(s) this month! Thank you for referring new users.",
                 )
             except Exception as e:
-                logger.error(f"Failed to notify user {uid} of referral earnings: {e}")
-
+                logger.error(f"Failed to notify user {godfather_id} of referral earnings: {e}")
     report_lines.append("-" * 35)
     report_lines.append(f"Total payout: {total_payout} FCFA")
-
     try:
         await application.bot.send_message(
-            chat_id=ADMIN_CHAT_ID,
+            chat_id=settings.ADMIN_CHAT_ID,
             text="\n".join(report_lines)
         )
     except Exception as e:
@@ -523,7 +434,7 @@ def setup_scheduler(application):
     scheduler.add_job(
         send_monthly_referral_report,
         "cron",
-        day=RENEWAL_DAY,
+        day=settings.RENEWAL_DAY,
         hour=0,
         minute=5,
         args=[application]
@@ -534,9 +445,8 @@ async def on_startup(application):
     setup_scheduler(application)
 
 def main() -> None:
-    application = Application.builder().token(BOT_TOKEN).build()
+    application = Application.builder().token(settings.BOT_TOKEN).build()
     application.post_init = on_startup
-
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
@@ -548,21 +458,18 @@ def main() -> None:
             PAYMENT_METHOD: [CallbackQueryHandler(payment_callback, pattern='^payment_')],
             TRANSACTION_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_transaction_id)],
         },
-        fallbacks=[]
+        fallbacks=[CommandHandler("cancel", cancel)]
     )
-
     application.add_handler(conv_handler)
     application.add_handler(CallbackQueryHandler(admin_callback, pattern="^(approve_|reject_)"))
     application.add_handler(CommandHandler("renew", renewal_info))
     application.add_handler(CommandHandler("referral", referral_info))
     application.add_handler(CommandHandler("stats", stats_info))
-    application.add_handler(MessageHandler(filters.Regex(r"(?i)^(?:👤\s*)?My Info\s*$"), my_info))
-    application.add_handler(MessageHandler(filters.Regex(r"(?i)^(?:📊\s*)?Referral Stats\s*$"), referral_stats))
-    application.add_handler(MessageHandler(filters.Regex(r"(?i)^(?:ℹ️\s*)?About Us\s*$"), about_us))
-    application.add_handler(MessageHandler(filters.Regex(r"(?i)^(?:📞\s*)?Contact Us\s*$"), contact_us))
-    application.add_handler(CommandHandler("earnings", referral_earnings))
+    application.add_handler(CommandHandler("myinfo", my_info))
+    application.add_handler(CommandHandler("referralstats", referral_stats))
+    application.add_handler(CommandHandler("aboutus", about_us))
+    application.add_handler(CommandHandler("contactus", contact_us))
     application.add_handler(CommandHandler("referral_earnings", referral_earnings))
-
     logger.info("Bot is starting...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
