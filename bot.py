@@ -15,6 +15,8 @@ from telegram.ext import (
 from dotenv import load_dotenv
 from pymongo import MongoClient
 from pymongo.errors import ConnectionFailure
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from bson.objectid import ObjectId
 
 # --- Configuration & Setup ---
 
@@ -44,9 +46,9 @@ ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 MONGO_URI = os.getenv("MONGO_URI")
 MONGO_DB_NAME = os.getenv("MONGO_DB_NAME")
 
-EVERSEND_LINK = "https://eversend.page.link/tnB3"
 SUBSCRIPTION_FEE = 5000
 RENEWAL_DAY = 25  # All subscriptions renew on the 25th of the month
+REFERRAL_REWARD = 2000  # Reward for each referral
 
 # Check for missing essential variables
 if not all([BOT_TOKEN, ADMIN_CHAT_ID, MONGO_URI, MONGO_DB_NAME]):
@@ -119,16 +121,16 @@ def get_messages(lang, renewal_date_str=""):
     """Returns a dictionary of all messages in the specified language."""
     # The user-provided text for after approval
     post_approval_fr = (
-        "Vous recevrez une somme de 2000 FCFA chaque fois qu’un nouveau compte est créé et une somme global lorsque les différents "
-        "individus parrainés par vous paie leurs abonnements de 5000 FCFA à la fin du mois ( 25 de chaque mois ).\n\n"
-        "Tout les payment sont fait le 25 de chaque mois et les comptes qui manqueront de payer seront automatiquement supprimés.\n\n"
-        "Profitez au maximum de notre service de parrainage et gagnez plus grâce à l’achat et la revente des crypto sur votre portefeuille Eversend."
+        "Vous recevrez une somme de 2000 FCFA chaque fois qu’un nouveau compte est créé et une somme globale lorsque les différents "
+        "individus parrainés par vous paient leurs abonnements de 5000 FCFA à la fin du mois (25 de chaque mois).\n\n"
+        "Tous les paiements sont faits le 25 de chaque mois et les comptes qui manqueront de payer seront automatiquement supprimés.\n\n"
+        "Profitez au maximum de notre service de parrainage et gagnez plus grâce à l’achat et la revente des crypto."
     )
     post_approval_en = (
         "You will receive a sum of 2000 FCFA each time a new account is created and a global amount when the different individuals "
         "sponsored by you pay their subscriptions of 5000 FCFA at the end of the month (25th of each month).\n\n"
         "All payments are made on the 25th of each month and accounts that fail to pay will be automatically deleted.\n\n"
-        "Make the most of our referral service and earn more by buying and reselling crypto on your Eversend wallet."
+        "Make the most of our referral service and earn more by buying and reselling crypto."
     )
     
     return {
@@ -143,11 +145,9 @@ def get_messages(lang, renewal_date_str=""):
         'approved_message': {
             'fr': f"✅ **Félicitations ! Votre compte est approuvé.**\n\n"
                   f"Votre prochain renouvellement est le **{renewal_date_str}**.\n\n"
-                  f"🔗 Voici votre lien pour recevoir vos gains :\n{EVERSEND_LINK}\n\n"
                   f"**Règles de Parrainage :**\n{post_approval_fr}",
             'en': f"✅ **Congratulations! Your account has been approved.**\n\n"
                   f"Your next renewal is on **{renewal_date_str}**.\n\n"
-                  f"🔗 Here is your link to receive your earnings:\n{EVERSEND_LINK}\n\n"
                   f"**Referral Rules:**\n{post_approval_en}"
         }[lang],
         'rejected_message': {'fr': "❌ **Paiement Refusé**\n\nDésolé, votre paiement n'a pas pu être vérifié. Veuillez vérifier les détails de la transaction et contacter un administrateur si vous pensez qu'il s'agit d'une erreur.", 'en': "❌ **Payment Rejected**\n\nSorry, your payment could not be verified. Please check the transaction details and contact an admin if you believe this is an error."}[lang],
@@ -413,8 +413,129 @@ async def contact_us(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=MAIN_MENU_KEYBOARD
     )
 
+async def referral_earnings(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show the user their referral earnings (all-time and this month)."""
+    user_id = update.effective_user.id
+    now = datetime.now()
+    last_25th = now.replace(day=RENEWAL_DAY)
+    if now.day < RENEWAL_DAY:
+        if last_25th.month == 1:
+            last_25th = last_25th.replace(year=last_25th.year - 1, month=12)
+        else:
+            last_25th = last_25th.replace(month=last_25th.month - 1)
+    period_start = last_25th.replace(hour=0, minute=0, second=0, microsecond=0)
+    period_end = now.replace(hour=23, minute=59, second=59, microsecond=999999)
+
+    # All-time
+    all_time_count = users_collection.count_documents({
+        "godfather": {"$in": [str(user_id), update.effective_user.username]},
+        "status": "Approved"
+    })
+    # This month
+    this_month_count = users_collection.count_documents({
+        "godfather": {"$in": [str(user_id), update.effective_user.username]},
+        "status": "Approved",
+        "registration_date": {"$gte": period_start, "$lte": period_end}
+    })
+    all_time_earnings = all_time_count * REFERRAL_REWARD
+    this_month_earnings = this_month_count * REFERRAL_REWARD
+
+    await update.message.reply_text(
+        f"💸 *Referral Earnings*\n\n"
+        f"All-time: {all_time_count} referrals = {all_time_earnings} FCFA\n"
+        f"This month: {this_month_count} referrals = {this_month_earnings} FCFA",
+        parse_mode="Markdown"
+    )
+
+async def send_monthly_referral_report(application):
+    now = datetime.now()
+    last_25th = now.replace(day=RENEWAL_DAY)
+    if now.day < RENEWAL_DAY:
+        if last_25th.month == 1:
+            last_25th = last_25th.replace(year=last_25th.year - 1, month=12)
+        else:
+            last_25th = last_25th.replace(month=last_25th.month - 1)
+    period_start = last_25th.replace(hour=0, minute=0, second=0, microsecond=0)
+    period_end = now.replace(hour=23, minute=59, second=59, microsecond=999999)
+
+    users = list(users_collection.find({}))
+    godfather_map = {}
+    for user in users:
+        godfather = user.get("godfather")
+        if godfather and godfather != "None":
+            godfather_user = users_collection.find_one({
+                "$or": [
+                    {"telegram_username": godfather},
+                    {"user_id": godfather},
+                    {"telegram_id": godfather}
+                ]
+            })
+            if godfather_user:
+                reg_date = user.get("registration_date")
+                status = user.get("status")
+                if reg_date and status == "Approved" and period_start <= reg_date <= period_end:
+                    godfather_id = godfather_user["user_id"]
+                    if godfather_id not in godfather_map:
+                        godfather_map[godfather_id] = {
+                            "username": godfather_user.get("telegram_username", ""),
+                            "name": godfather_user.get("name", ""),
+                            "count": 0
+                        }
+                    godfather_map[godfather_id]["count"] += 1
+
+    total_payout = 0
+    report_lines = ["Referral Earnings Report ({} - {})".format(
+        period_start.strftime("%d %b %Y"), period_end.strftime("%d %b %Y"))]
+    report_lines.append("User | Referrals | Amount (FCFA)")
+    report_lines.append("-" * 35)
+    for user in users:
+        uid = user["user_id"]
+        username = user.get("telegram_username", "")
+        name = user.get("name", "")
+        count = godfather_map.get(uid, {}).get("count", 0)
+        amount = count * REFERRAL_REWARD
+        total_payout += amount
+        report_lines.append(f"{name} (@{username}) | {count} | {amount}")
+
+        # Notify user if they have earnings
+        if amount > 0:
+            try:
+                await application.bot.send_message(
+                    chat_id=uid,
+                    text=f"🎉 You earned {amount} FCFA from {count} referral(s) this month! Thank you for referring new users.",
+                )
+            except Exception as e:
+                logger.error(f"Failed to notify user {uid} of referral earnings: {e}")
+
+    report_lines.append("-" * 35)
+    report_lines.append(f"Total payout: {total_payout} FCFA")
+
+    try:
+        await application.bot.send_message(
+            chat_id=ADMIN_CHAT_ID,
+            text="\n".join(report_lines)
+        )
+    except Exception as e:
+        logger.error(f"Failed to send monthly referral report to admin: {e}")
+
+def setup_scheduler(application):
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(
+        send_monthly_referral_report,
+        "cron",
+        day=RENEWAL_DAY,
+        hour=0,
+        minute=5,
+        args=[application]
+    )
+    scheduler.start()
+
+async def on_startup(application):
+    setup_scheduler(application)
+
 def main() -> None:
     application = Application.builder().token(BOT_TOKEN).build()
+    application.post_init = on_startup
 
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
@@ -431,13 +552,16 @@ def main() -> None:
     )
 
     application.add_handler(conv_handler)
+    application.add_handler(CallbackQueryHandler(admin_callback, pattern="^(approve_|reject_)"))
     application.add_handler(CommandHandler("renew", renewal_info))
     application.add_handler(CommandHandler("referral", referral_info))
     application.add_handler(CommandHandler("stats", stats_info))
-    application.add_handler(MessageHandler(filters.Regex("^My Info$"), my_info))
-    application.add_handler(MessageHandler(filters.Regex("^Referral Stats$"), referral_stats))
-    application.add_handler(MessageHandler(filters.Regex("^About Us$"), about_us))
-    application.add_handler(MessageHandler(filters.Regex("^Contact Us$"), contact_us))
+    application.add_handler(MessageHandler(filters.Regex(r"(?i)^(?:👤\s*)?My Info\s*$"), my_info))
+    application.add_handler(MessageHandler(filters.Regex(r"(?i)^(?:📊\s*)?Referral Stats\s*$"), referral_stats))
+    application.add_handler(MessageHandler(filters.Regex(r"(?i)^(?:ℹ️\s*)?About Us\s*$"), about_us))
+    application.add_handler(MessageHandler(filters.Regex(r"(?i)^(?:📞\s*)?Contact Us\s*$"), contact_us))
+    application.add_handler(CommandHandler("earnings", referral_earnings))
+    application.add_handler(CommandHandler("referral_earnings", referral_earnings))
 
     logger.info("Bot is starting...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
