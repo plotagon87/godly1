@@ -74,7 +74,10 @@ def get_messages(lang, renewal_date_str=""):
         'welcome': "🎉 Welcome to our referral system! / Bienvenue dans notre système de parrainage!\n\n"
                    "Please choose your language / Choisissez votre langue:",
         'ask_name': {'fr': "📝 Entrez votre nom complet:", 'en': "📝 Please enter your full name:"}[lang],
-        'ask_number': {'fr': "📞 Entrez votre numéro de téléphone (Ex: 67...):", 'en': "📞 Please enter your phone number (e.g., 67...):"}[lang],
+        'ask_number': {
+            'fr': "📞 Entrez votre numéro de téléphone (Ex: 67...).\n\n⚠️ Ce numéro sera utilisé pour recevoir vos paiements de parrainage. Assurez-vous qu'il est correct.",
+            'en': "📞 Please enter your phone number (e.g., 67...).\n\n⚠️ This number will be used to receive your referral payments. Make sure it is correct."
+        }[lang],
         'ask_email': {'fr': "📧 Entrez votre adresse e-mail:", 'en': "📧 Please enter your email address:"}[lang],
         'ask_godfather': {'fr': "👨‍👦 Entrez le numéro d'utilisateur Telegram de votre parrain (ou envoyez 'skip' si vous n'en avez pas):", 'en': "👨‍👦 Please enter your godfather's Telegram user ID (or send 'skip' if you don't have one):"}[lang],
         'choose_payment': {'fr': f"✅ Informations enregistrées ! Pour activer votre compte, veuillez payer les frais d'abonnement de **{settings.SUBSCRIPTION_FEE} FCFA**. Choisissez votre mode de paiement :", 'en': f"✅ Information saved! To activate your account, please pay the **{settings.SUBSCRIPTION_FEE} FCFA** subscription fee. Choose your payment method:"}[lang],
@@ -274,7 +277,49 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         renewal_date_str = renewal_date.strftime('%d %B %Y')
         messages = get_messages(lang, renewal_date_str)
         try:
+            # Notify the user
             await context.bot.send_message(chat_id=user_id, text=messages['approved_message'], parse_mode='Markdown')
+            # Notify godfather instantly if exists
+            godfather_id = user_record.get("godfather")
+            if godfather_id:
+                # Notify godfather
+                try:
+                    await context.bot.send_message(
+                        chat_id=godfather_id,
+                        text=(
+                            "🎉 Congratulations! You have earned 2000 FCFA for referring a new user "
+                            f"({user_record.get('name')}). The admin will pay you 2000 FCFA shortly."
+                        )
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to notify godfather {godfather_id}: {e}")
+                # Notify admin to pay godfather
+                try:
+                    godfather_user = users_collection.find_one({"user_id": godfather_id})
+                    godfather_name = godfather_user.get("name", "Unknown") if godfather_user else str(godfather_id)
+                    godfather_phone = godfather_user.get("phone", "Unknown") if godfather_user else "Unknown"
+                    godfather_payment_method = godfather_user.get("payment_method", "Unknown").upper() if godfather_user else "Unknown"
+                    await context.bot.send_message(
+                        chat_id=settings.ADMIN_CHAT_ID,
+                        text=(
+                            f"💸 PAY REFERRAL: Please pay 2000 FCFA to godfather:\n"
+                            f"Name: {godfather_name}\n"
+                            f"Phone: {godfather_phone}\n"
+                            f"User ID: {godfather_id}\n"
+                            f"Preferred Payment Method: {godfather_payment_method}\n"
+                            f"Reason: Referral of {user_record.get('name')} (User ID: {user_id})"
+                        )
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to notify admin for godfather payment: {e}")
+                # Notify referred user that their godfather will be paid
+                try:
+                    await context.bot.send_message(
+                        chat_id=user_id,
+                        text="Your godfather will receive 2000 FCFA from the admin for referring you. Thank you!"
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to notify user about godfather payment: {e}")
             await query.edit_message_text(text=f"{original_message}\n\n--- [ ✅ APPROVED by {query.from_user.first_name} ] ---")
         except Exception as e:
             logger.error(f"Failed to send approval message to {user_id}: {e}")
