@@ -6,3 +6,5 @@ apscheduler==3.10.4
 rich==13.7.1
 pytest==8.2.2
 python-dateutil==2.9.0.post0
+# For testing purposes
+#skdkd
