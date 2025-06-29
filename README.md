@@ -41,3 +41,15 @@ A production-ready Telegram bot for referral-based subscriptions, built with pyt
 - Use `/start` to begin registration.
 - Use `/myinfo`, `/referralstats`, `/aboutus`, `/contactus`, `/referral_earnings` for bot features.
 - Admin receives monthly payout reports automatically.
+
+## Deploying to Railway
+
+1. Push your code to GitHub.
+2. Go to [Railway](https://railway.app/) and create a new project.
+3. Connect your GitHub repo.
+4. Set the following environment variables in the Railway dashboard:
+    - `BOT_TOKEN`
+    - `ADMIN_CHAT_ID`
+    - `MONGO_URI`
+    - `MONGO_DB_NAME`
+5. Deploy! Railway will run `python bot.py` automatically.

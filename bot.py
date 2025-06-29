@@ -345,7 +345,7 @@ async def about_us(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def contact_us(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "📞 *Contact Us*\n\nFor support, email: support@example.com or call +237 6XXXXXXXX.",
+        "📞 *Contact Us*\n\nFor support, email: support@example.com .",
         parse_mode="Markdown",
         reply_markup=MAIN_MENU_KEYBOARD
     )
