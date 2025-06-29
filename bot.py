@@ -94,12 +94,12 @@ def get_messages(lang, renewal_date_str=""):
 
 PAYMENT_DETAILS = {
     'mtn': {
-        'fr': f"📱 **Paiement par MTN Mobile Money**\n\nVeuillez transférer **{settings.SUBSCRIPTION_FEE} FCFA** au numéro suivant:\nNuméro: `+237 6XXXXXXXX`\nNom: `NOM DU BÉNÉFICIAIRE`\n\nAprès le paiement, revenez ici et envoyez l'ID de la transaction pour vérification.",
-        'en': f"📱 **MTN Mobile Money Payment**\n\nPlease transfer **{settings.SUBSCRIPTION_FEE} FCFA** to the following number:\nNumber: `+237 6XXXXXXXX`\nName: `RECIPIENT NAME`\n\nAfter payment, come back here and send the Transaction ID for verification."
+        'fr': f"📱 **Paiement par MTN Mobile Money**\n\nVeuillez transférer **{settings.SUBSCRIPTION_FEE} FCFA** au numéro suivant:\nNuméro: `+2376759770720`\nNom: `ROSETTE GUIFABE PABAME`\n\nAprès le paiement, revenez ici et envoyez l'ID de la transaction pour vérification.",
+        'en': f"📱 **MTN Mobile Money Payment**\n\nPlease transfer **{settings.SUBSCRIPTION_FEE} FCFA** to the following number:\nNumber: `+2376759770720`\nName: `ROSETTE GUIFABE PABAME`\n\nAfter payment, come back here and send the Transaction ID for verification."
     },
     'orange': {
-        'fr': f"🍊 **Paiement par Orange Money**\n\nVeuillez transférer **{settings.SUBSCRIPTION_FEE} FCFA** au numéro suivant:\nNuméro: `+237 6XXXXXXXX`\nNom: `NOM DU BÉNÉFICIAIRE`\n\nAprès le paiement, revenez ici et envoyez l'ID de la transaction pour vérification.",
-        'en': f"🍊 **Orange Money Payment**\n\nPlease transfer **{settings.SUBSCRIPTION_FEE} FCFA** to the following number:\nNumber: `+237 6XXXXXXXX`\nName: `RECIPIENT NAME`\n\nAfter payment, come back here and send the Transaction ID for verification."
+        'fr': f"🍊 **Paiement par Orange Money**\n\nVeuillez transférer **{settings.SUBSCRIPTION_FEE} FCFA** au numéro suivant:\nNuméro: `+237699644540`\nNom: `GAHUIS FABASSO TOUOFFO`\n\nAprès le paiement, revenez ici et envoyez l'ID de la transaction pour vérification.",
+        'en': f"🍊 **Orange Money Payment**\n\nPlease transfer **{settings.SUBSCRIPTION_FEE} FCFA** to the following number:\nNumber: `+237699644540`\nName: `GAHUIS FABASSO TOUOFFO`\n\nAfter payment, come back here and send the Transaction ID for verification."
     }
 }
 
@@ -345,7 +345,7 @@ async def about_us(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def contact_us(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "📞 *Contact Us*\n\nFor support, email: support@example.com .",
+        "📞 *Contact Us*\n\nFor support, email: godfatherbot9@gmail.com .",
         parse_mode="Markdown",
         reply_markup=MAIN_MENU_KEYBOARD
     )
